@@ -44,49 +44,49 @@ constexpr bool IsNested(size_t a_brackets, bool a_quote)
 
 constexpr size_t NextEnumCommaOrEndPos(size_t a_start, std::string_view a_enum_str)
 {
-  size_t l_brackets = 0; //()[]{}
-  bool l_quote = false;  //""
-  char l_last_char = '\0';
-  char l_next_char = '\0';
+  size_t brackets = 0; //()[]{}
+  bool quote = false;  //""
+  char last_char = '\0';
+  char next_char = '\0';
 
-  auto l_feed_counters = [&](char c) constexpr {
-    if (l_quote) {
-      if (l_last_char != '\\' && c == '"') //ignore " if they are backslashes
-        l_quote = false;
+  auto feed_counters = [&](char c) constexpr {
+    if (quote) {
+      if (last_char != '\\' && c == '"') //ignore " if they are backslashes
+        quote = false;
       return;
     }
 
     switch (c) {
       case '"':
-        if (l_last_char != '\\') //ignore " if they are backslashes
-          l_quote = true;
+        if (last_char != '\\') //ignore " if they are backslashes
+          quote = true;
         break;
       case '(':
       case '<':
-        if (l_last_char == '<' || l_next_char == '<')
+        if (last_char == '<' || next_char == '<')
           break;
         [[fallthrough]];
-      case '{':++l_brackets;
+      case '{':++brackets;
         break;
       case ')':
       case '>':
-        if (l_last_char == '>' || l_next_char == '>')
+        if (last_char == '>' || next_char == '>')
           break;
         [[fallthrough]];
-      case '}':--l_brackets;
+      case '}':--brackets;
         break;
       default:break;
     }
   };
 
-  size_t l_current = a_start;
-  for (; l_current < a_enum_str.size() && (IsNested(l_brackets, l_quote) || (a_enum_str[l_current] != ',')); ++l_current) {
-    l_feed_counters(a_enum_str[l_current]);
-    l_last_char = a_enum_str[l_current];
-    l_next_char = l_current + 2 < a_enum_str.size() ? a_enum_str[l_current + 2] : '\0';
+  size_t current = a_start;
+  for (; current < a_enum_str.size() && (IsNested(brackets, quote) || (a_enum_str[current] != ',')); ++current) {
+    feed_counters(a_enum_str[current]);
+    last_char = a_enum_str[current];
+    next_char = current + 2 < a_enum_str.size() ? a_enum_str[current + 2] : '\0';
   }
 
-  return l_current;
+  return current;
 }
 
 constexpr bool IsAllowedIdChar(char c)
@@ -96,17 +96,17 @@ constexpr bool IsAllowedIdChar(char c)
 
 constexpr std::string_view ParseEnumMemberName(std::string_view a_member_str)
 {
-  size_t l_name_start = 0;
-  while (!IsAllowedIdChar(a_member_str[l_name_start])) {
-    ++l_name_start;
+  size_t name_start = 0;
+  while (!IsAllowedIdChar(a_member_str[name_start])) {
+    ++name_start;
   }
 
-  size_t l_name_size = 0;
-  while ((l_name_start + l_name_size) < a_member_str.size() && IsAllowedIdChar(a_member_str[l_name_start + l_name_size])) {
-    ++l_name_size;
+  size_t name_size = 0;
+  while ((name_start + name_size) < a_member_str.size() && IsAllowedIdChar(a_member_str[name_start + name_size])) {
+    ++name_size;
   }
 
-  return {&a_member_str[l_name_start], l_name_size};
+  return {&a_member_str[name_start], name_size};
 }
 
 template<typename EnumT, typename EnumeratorT, size_t size>
@@ -115,27 +115,27 @@ constexpr MetaEnum<EnumT, EnumeratorT, size> ParseMetaEnum(std::string_view in, 
   MetaEnum<EnumT, EnumeratorT, size> result;
   result.string = in;
 
-  std::array<std::string_view, size> l_member_str;
-  size_t l_amount_filled = 0;
-  size_t l_startpos = 0;
+  std::array<std::string_view, size> member_str;
+  size_t amount_filled = 0;
+  size_t startpos = 0;
 
-  while (l_amount_filled < size) {
-    const size_t l_endpos = NextEnumCommaOrEndPos(l_startpos + 1, in);
-    size_t l_strlen = l_endpos - l_startpos;
+  while (amount_filled < size) {
+    const size_t endpos = NextEnumCommaOrEndPos(startpos + 1, in);
+    size_t strlen = endpos - startpos;
 
-    if (l_startpos != 0) {
-      ++l_startpos;
-      --l_strlen;
+    if (startpos != 0) {
+      ++startpos;
+      --strlen;
     }
 
-    l_member_str[l_amount_filled] = {&in[l_startpos], l_strlen};
-    ++l_amount_filled;
-    l_startpos = l_endpos;
+    member_str[amount_filled] = {&in[startpos], strlen};
+    ++amount_filled;
+    startpos = endpos;
   }
 
-  for (size_t i = 0; i < l_member_str.size(); ++i) {
-    result.members[i].name = ParseEnumMemberName(l_member_str[i]);
-    result.members[i].string = l_member_str[i];
+  for (size_t i = 0; i < member_str.size(); ++i) {
+    result.members[i].name = ParseEnumMemberName(member_str[i]);
+    result.members[i].string = member_str[i];
     result.members[i].value = a_values[i];
     result.members[i].index = i;
   }
@@ -146,11 +146,11 @@ constexpr MetaEnum<EnumT, EnumeratorT, size> ParseMetaEnum(std::string_view in, 
 template<typename EnumeratorT>
 struct IntWrapper
 {
-  constexpr IntWrapper() : value(0), empty(true)
+  constexpr IntWrapper() : value{0}, empty{true}
   {
   }
 
-  explicit(false) constexpr IntWrapper(EnumeratorT in) : value(in), empty(false) // NOLINT(google-explicit-constructor)
+  explicit(false) constexpr IntWrapper(EnumeratorT in) : value{in}, empty{false} // NOLINT(google-explicit-constructor)
   {
   }
 
@@ -170,13 +170,13 @@ constexpr std::array<EnumT, size> ResolveEnumValuesArray(const std::initializer_
 {
   std::array<EnumT, size> result{};
 
-  EnumeratorT l_next_value = 0;
+  EnumeratorT next_value = 0;
   for (size_t i = 0; i < size; ++i) {
     auto it = in.begin();
     auto wrapper = (std::advance(it, i), *it);
-    EnumeratorT l_new_value = wrapper.empty ? l_next_value : wrapper.value;
-    l_next_value = l_new_value + 1;
-    result[i] = static_cast<EnumT>(l_new_value);
+    EnumeratorT new_value = wrapper.empty ? next_value : wrapper.value;
+    next_value = new_value + 1;
+    result[i] = static_cast<EnumT>(new_value);
   }
 
   return result;

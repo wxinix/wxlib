@@ -22,10 +22,10 @@ template<unsigned char C>
 static const char *find_end(const char *a_begin, size_t a_size) noexcept
 {
   using iter_diff_t = typename std::iterator_traits<const char *>::difference_type;
-  auto l_rb = std::reverse_iterator(std::next(a_begin, static_cast<iter_diff_t>(a_size)));
-  auto l_re = std::reverse_iterator(a_begin);
+  auto rb = std::reverse_iterator(std::next(a_begin, static_cast<iter_diff_t>(a_size)));
+  auto re = std::reverse_iterator(a_begin);
 
-  return std::find(l_rb, l_re, C).base();
+  return std::find(rb, re, C).base();
 }
 
 /*!
@@ -39,25 +39,25 @@ static const char *find_end(const char *a_begin, size_t a_size) noexcept
 template<unsigned char C>
 static const char *avx2_find(const char *a_begin, const char *a_end)
 {
-  const char *l_begin = a_begin;
+  const char *begin = a_begin;
 
-  for (auto q = _mm256_set1_epi8(C); l_begin + 32 < a_end; l_begin += 32) {
-    auto x = _mm256_lddqu_si256(reinterpret_cast<const __m256i *>(l_begin));
+  for (auto q = _mm256_set1_epi8(C); begin + 32 < a_end; begin += 32) {
+    auto x = _mm256_lddqu_si256(reinterpret_cast<const __m256i *>(begin));
     auto r = _mm256_cmpeq_epi8(x, q);
     auto z = _mm256_movemask_epi8(r);
 
     if (z) {
 #ifdef __GNUC__
-      const char *rr = l_begin + __builtin_ffs(z) - 1;
+      const char *rr = begin + __builtin_ffs(z) - 1;
 #else
       unsigned long b;
-      auto rr = _BitScanForward(&b, z) ? (l_begin + b) : l_begin;
+      auto rr = _BitScanForward(&b, z) ? (begin + b) : begin;
 #endif
       return rr < a_end ? rr : a_end;
     }
   }
 
-  return oct_find<C>(l_begin, a_end);
+  return oct_find<C>(begin, a_end);
 }
 
 /*!
@@ -70,35 +70,28 @@ static const char *avx2_find(const char *a_begin, const char *a_end)
 template<unsigned char C>
 static const char *oct_find(const char *a_begin, const char *a_end)
 {
-  constexpr uint64_t l_key = C;
-  constexpr uint64_t l_pattern = l_key
-      | (l_key << 0x08)
-      | (l_key << 0x10)
-      | (l_key << 0x18)
-      | (l_key << 0x20)
-      | (l_key << 0x28)
-      | (l_key << 0x30)
-      | (l_key << 0x38);
+  constexpr uint64_t k = C;
+  constexpr uint64_t p = k | (k << 0x08) | (k << 0x10) | (k << 0x18) | (k << 0x20) | (k << 0x28) | (k << 0x30) | (k << 0x38);
 
   auto do_find = [&](const uint64_t *a_data) {
-    auto l_input = (*a_data) ^ l_pattern;
-    auto l_tmp = (l_input & 0x7F7F7F7F7F7F7F7FL) + 0x7F7F7F7F7F7F7F7FL;
-    l_tmp = ~(l_tmp | l_input | 0x7F7F7F7F7F7F7F7FL);
-    return std::countr_zero(l_tmp) >> 3;
+    auto input = (*a_data) ^ p;
+    auto tmp = (input & 0x7F7F7F7F7F7F7F7FL) + 0x7F7F7F7F7F7F7F7FL;
+    tmp = ~(tmp | input | 0x7F7F7F7F7F7F7F7FL);
+    return std::countr_zero(tmp) >> 3;
   };
 
-  auto l_jumps = std::distance(a_begin, a_end) >> 3;
-  const char *l_begin = a_begin;
-
-  for (int i = 0; i < l_jumps; i++) {
-    auto l_pos = do_find((uint64_t *) (l_begin));
-    if (l_pos == 8)
-      l_begin = std::next(l_begin, 8);
+  const char *b = a_begin;
+  auto jmp = std::distance(a_begin, a_end) >> 3;
+  
+  for (int i = 0; i < jmp; i++) {
+    auto find_pos = do_find((uint64_t *) (b));
+    if (find_pos == 8)
+      b = std::next(b, 8);
     else
-      return std::next(l_begin, l_pos);
+      return std::next(b, find_pos);
   }
 
-  return std::find(l_begin, a_end, C);
+  return std::find(b, a_end, C);
 }
 
 template<unsigned char C>

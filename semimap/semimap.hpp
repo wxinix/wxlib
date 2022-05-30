@@ -51,96 +51,91 @@ namespace semi {
 namespace detail {
 
 // evaluates to the type returned by a constexpr lambda
-template<typename Identifier>
-using identifier_type = decltype(std::declval<Identifier>()());
+template<typename IdentifierT>
+using identifier_t = decltype(std::declval<IdentifierT>()());
 
-constexpr std::size_t constexpr_strlen(const char *str) // NOLINT(misc-no-recursion)
+constexpr std::size_t constexpr_strlen(const char *a_str) // NOLINT(misc-no-recursion)
 {
-  return str[0] == 0 ? 0 : constexpr_strlen(str + 1) + 1;
+  return a_str[0] == 0 ? 0 : constexpr_strlen(a_str + 1) + 1;
 }
 
 template<auto...>
-struct dummy_t
+struct TypeCreator
 {
 };
 
-template<typename Identifier>
-requires std::is_integral_v<identifier_type<Identifier>>
-constexpr auto idval2type(Identifier id)
+template<typename IdentifierT>
+requires std::is_integral_v<identifier_t<IdentifierT>>
+constexpr auto idval2type(IdentifierT a_id)
 {
-  return dummy_t<id()>{};
+  return TypeCreator<a_id()>{};
 }
 
-template<typename Identifier, std::size_t ...I>
-requires std::is_same_v<identifier_type<Identifier>, const char *>
-constexpr auto idval2type(Identifier id, std::index_sequence<I...>)
+template<typename IdentifierT, std::size_t ...Is>
+requires std::is_same_v<identifier_t<IdentifierT>, const char *>
+constexpr auto idval2type(IdentifierT a_id, std::index_sequence<Is...>)
 {
-  return dummy_t<id()[I]...>{};
+  return TypeCreator<a_id()[Is]...>{};
 }
 
-template<typename Identifier>
-requires std::is_same_v<identifier_type<Identifier>, const char *>
-constexpr auto idval2type(Identifier id)
+template<typename IdentifierT>
+requires std::is_same_v<identifier_t<IdentifierT>, const char *>
+constexpr auto idval2type(IdentifierT a_id)
 {
-  return idval2type(id, std::make_index_sequence<constexpr_strlen(id())>{});
+  return idval2type(a_id, std::make_index_sequence<constexpr_strlen(a_id())>{});
 }
 
-template<typename Identifier>
-requires std::is_enum_v<identifier_type<Identifier>>
-constexpr auto idval2type(Identifier id)
+template<typename IdentifierT>
+requires std::is_enum_v<identifier_t<IdentifierT>>
+constexpr auto idval2type(IdentifierT a_id)
 {
-  return dummy_t<id()>{};
+  return TypeCreator<a_id()>{};
 }
 
 template<typename, typename, bool>
-struct [[maybe_unused]] default_tag
+struct default_tag
 {
 };
 
 // super simple flat map implementation
-template<typename Key, typename Value>
+template<typename KeyT, typename ValueT>
 class flat_map
 {
 public:
-  template<typename... Args>
-  Value &get(const Key &key, Args &&... args)
+  template<typename... ArgTs>
+  ValueT &get(const KeyT &a_key, ArgTs &&... a_args)
   {
-    for (auto &pair : storage)
-      if (key == pair.first) {
-        return pair.second;
-      }
+    for (auto &pair : storage_)
+      if (a_key == pair.first) return pair.second;
 
-    return storage.emplace_back(key, Value(std::forward<Args>(args)...)).second;
+    return storage_.emplace_back(a_key, ValueT(std::forward<ArgTs>(a_args)...)).second;
   }
 
   auto size() const
   {
-    return storage.size();
+    return storage_.size();
   }
 
-  void erase(const Key &key)
+  void erase(const KeyT &a_key)
   {
-    for (auto it = storage.begin(); it != storage.end(); ++it) {
-      if (it->first == key) {
-        storage.erase(it);
+    for (auto it = storage_.begin(); it != storage_.end(); ++it) {
+      if (it->first == a_key) {
+        storage_.erase(it);
         return;
       }
     }
   }
 
-  bool contains(const Key &key) const
+  bool contains(const KeyT &a_key) const
   {
-    for (auto &pair : storage) {
-      if (pair.first == key) {
-        return true;
-      }
-    }
+    for (auto &pair : storage_)
+      if (pair.first == a_key) return true;
 
     return false;
   }
 
 private:
-  std::vector<std::pair<Key, Value>> storage;
+  std::vector<std::pair<KeyT, ValueT>> storage_;
 };
 
 } // namespace detail
@@ -149,68 +144,65 @@ private:
 template<typename, typename, typename>
 class map;
 
-template<typename Key, typename Value, typename Tag = detail::default_tag<Key, Value, true>>
+template<typename KeyT, typename ValueT, typename TagT = detail::default_tag<KeyT, ValueT, true>>
 class static_map
 {
 public:
   static_map() = delete;
 
-  template<typename Identifier, typename... Args>
-  requires std::is_invocable_v<Identifier> && std::is_convertible_v<detail::identifier_type<Identifier>, Key>
-  static Value &get(Identifier id, Args &&... args)
+  template<typename IdentifierT, typename... ArgTs>
+  requires std::is_invocable_v<IdentifierT> && std::is_convertible_v<detail::identifier_t<IdentifierT>, KeyT>
+  static ValueT &get(IdentifierT a_id, ArgTs &&... a_args)
   {
-    using UniqueTypeForKeyValue = decltype(detail::idval2type(id));
+    using UniqueTypeForKeyValue = decltype(detail::idval2type(a_id));
 
     auto *mem = storage<UniqueTypeForKeyValue>;
-    auto &i_flag = init_flag<UniqueTypeForKeyValue>;
+    auto &l_init_flag = init_flag<UniqueTypeForKeyValue>;
 
-    if (!semi_branch_expect(i_flag, true)) {
-      Key key(id());
-
+    if (!semi_branch_expect(l_init_flag, true)) {
+      KeyT key(a_id());
       auto it = runtime_map.find(key);
 
-      if (it != runtime_map.end()) {
-        it->second = u_ptr(new(mem) Value(std::move(*it->second)), {&i_flag});
-      } else {
-        runtime_map.emplace_hint(it, key, u_ptr(new(mem) Value(std::forward<Args>(args)...), {&i_flag}));
-      }
+      if (it != runtime_map.end())
+        it->second = u_ptr(new(mem) ValueT(std::move(*it->second)), {&l_init_flag});
+      else
+        runtime_map.emplace_hint(it, key, u_ptr(new(mem) ValueT(std::forward<ArgTs>(a_args)...), {&l_init_flag}));
 
-      i_flag = true;
+      l_init_flag = true;
     }
 
-    return *std::launder(reinterpret_cast<Value *>(mem));
+    return *std::launder(reinterpret_cast<ValueT *>(mem));
   }
 
-  template<typename... Args>
-  static Value &get(const Key &key, Args &&... args)
+  template<typename... ArgTs>
+  static ValueT &get(const KeyT &a_key, ArgTs &&... a_args)
   {
-    auto it = runtime_map.find(key);
+    auto it = runtime_map.find(a_key);
 
-    if (it != runtime_map.end()) {
+    if (it != runtime_map.end())
       return *it->second;
-    }
-
-    return *runtime_map.emplace_hint(it, key, u_ptr(new Value(std::forward<Args>(args)...), {nullptr}))->second;
+    else
+      return *runtime_map.emplace_hint(it, a_key, u_ptr(new ValueT(std::forward<ArgTs>(a_args)...), {nullptr}))->second;
   }
 
-  template<typename Identifier>
-  requires std::is_invocable_v<Identifier>
-  static bool contains(Identifier identifier)
+  template<typename IdentifierT>
+  requires std::is_invocable_v<IdentifierT>
+  static bool contains(IdentifierT a_id)
   {
-    using UniqueTypeForKeyValue = decltype(detail::idval2type(identifier));
+    using UniqueTypeForKeyValue = decltype(detail::idval2type(a_id));
     // @formatter:off
     if (!semi_branch_expect(init_flag<UniqueTypeForKeyValue>, true)) {
     // @formatter:on
-      auto key = identifier();
+      auto key = a_id();
       return contains(key);
     }
 
     return true;
   }
 
-  static bool contains(const Key &key)
+  static bool contains(const KeyT &a_key)
   {
-    return (runtime_map.find(key) != runtime_map.end());
+    return (runtime_map.find(a_key) != runtime_map.end());
   }
 
   template<typename Identifier>
@@ -220,9 +212,9 @@ public:
     erase(identifier());
   }
 
-  static void erase(const Key &key)
+  static void erase(const KeyT &a_key)
   {
-    runtime_map.erase(key);
+    runtime_map.erase(a_key);
   }
 
   static void clear()
@@ -231,48 +223,48 @@ public:
   }
 
 private:
-  struct value_deleter
+  struct ValueDeleter
   {
-    bool *i_flag = nullptr;
-
-    void operator()(Value *v)
+    void operator()(ValueT *a_value)
     {
-      if (i_flag != nullptr) {
-        v->~Value();
-        *i_flag = false;
+      if (init_flag != nullptr) {
+        a_value->~ValueT();
+        *init_flag = false;
       } else {
-        delete v;
+        delete a_value;
       }
     }
+
+    bool *init_flag = nullptr;
   };
 
-  using u_ptr = std::unique_ptr<Value, value_deleter>;
+  using u_ptr = std::unique_ptr<ValueT, ValueDeleter>;
 
   template<typename, typename, typename>
   friend
   class map;
 
   template<typename>
-  alignas(Value) static char storage[sizeof(Value)];
+  alignas(ValueT) static char storage[sizeof(ValueT)];
 
   template<typename>
   static bool init_flag;
 
-  static std::unordered_map<Key, std::unique_ptr<Value, value_deleter>> runtime_map;
+  static std::unordered_map<KeyT, std::unique_ptr<ValueT, ValueDeleter>> runtime_map;
 };
 
-template<typename Key, typename Value, typename Tag>
-std::unordered_map<Key, typename static_map<Key, Value, Tag>::u_ptr> static_map<Key, Value, Tag>::runtime_map;
+template<typename KeyT, typename ValueT, typename TagT>
+std::unordered_map<KeyT, typename static_map<KeyT, ValueT, TagT>::u_ptr> static_map<KeyT, ValueT, TagT>::runtime_map;
 
-template<typename Key, typename Value, typename Tag>
+template<typename KeyT, typename ValueT, typename TagT>
 template<typename>
-alignas(Value) char static_map<Key, Value, Tag>::storage[sizeof(Value)];
+alignas(ValueT) char static_map<KeyT, ValueT, TagT>::storage[sizeof(ValueT)];
 
-template<typename Key, typename Value, typename Tag>
+template<typename KeyT, typename ValueT, typename TagT>
 template<typename>
-bool static_map<Key, Value, Tag>::init_flag = false;
+bool static_map<KeyT, ValueT, TagT>::init_flag = false;
 
-template<typename Key, typename Value, typename Tag = detail::default_tag<Key, Value, false>>
+template<typename KeyT, typename ValueT, typename TagT = detail::default_tag<KeyT, ValueT, false>>
 class map
 {
 public:
@@ -281,32 +273,25 @@ public:
     clear();
   }
 
-  template<typename Identifier, typename... Args>
-  Value &get(Identifier key, Args &... args)
+  template<typename IdentifierT, typename... ArgTs>
+  ValueT &get(IdentifierT a_key, ArgTs &... a_args)
   {
-    return staticmap::get(key).get(this, std::forward<Args>(args)...);
+    return staticmap::get(a_key).get(this, std::forward<ArgTs>(a_args)...);
   }
 
-  template<typename Identifier>
-  bool contains(Identifier key)
+  template<typename IdentifierT>
+  bool contains(IdentifierT a_key)
   {
-    if (staticmap::contains(key)) {
-      return staticmap::get(key).contains(this);
-    }
-
-    return false;
+    return staticmap::contains(a_key) ? staticmap::get(a_key).contains(this) : false;
   }
 
-  template<typename Identifier>
-  void erase(Identifier key)
+  template<typename IdentifierT>
+  void erase(IdentifierT a_key)
   {
-    if (staticmap::contains(key)) {
-      auto &map = staticmap::get(key);
+    if (staticmap::contains(a_key)) {
+      auto &map = staticmap::get(a_key);
       map.erase(this);
-
-      if (map.size() == 0) {
-        staticmap::erase(key);
-      }
+      if (map.size() == 0) staticmap::erase(a_key);
     }
   }
 
@@ -316,7 +301,6 @@ public:
 
     while (it != staticmap::runtime_map.end()) {
       auto &map = *it->second;
-
       map.erase(this);
 
       if (map.size() == 0) {
@@ -329,7 +313,7 @@ public:
   }
 
 private:
-  using staticmap = static_map<Key, detail::flat_map<map<Key, Value> *, Value>, Tag>;
+  using staticmap = static_map<KeyT, detail::flat_map<map<KeyT, ValueT> *, ValueT>, TagT>;
 };
 
 #undef semi_branch_expect

@@ -6,8 +6,6 @@ else ()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
 endif ()
 
-set(INCLUDE_DIR
-        "${CMAKE_SOURCE_DIR}/doctest"
-        "${CMAKE_SOURCE_DIR}/mio")
+set(INCLUDE_DIR "${CMAKE_SOURCE_DIR}")
 
 target_include_directories(mio_test PRIVATE ${INCLUDE_DIR})

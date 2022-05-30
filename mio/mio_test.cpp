@@ -5,7 +5,7 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 
-#include <doctest.h>
+#include <doctest/doctest.h>
 
 #include <cstring>
 #include <string_view>
@@ -245,7 +245,7 @@ TEST_CASE("csvdoc")
 
     auto [success, msg] = csv_doc.VerifyHeader(std::string_view{"Field1,Field3,Field3,Field4"});
     CHECK(!success);
-    CHECK(msg == "Invalid column names, error code 0100");
+    CHECK(msg == "Invalid column names, code 0100");
   }
 
   SUBCASE("test VerifyHeader returns error for invalid column counts") {
@@ -268,7 +268,7 @@ TEST_CASE("csvdoc")
         Field<NAME("Field4")>
     > csv_doc;
 
-    CHECK(csv_doc.numfields == 4);
+    CHECK(csv_doc.field_count == 4);
   }
 
   SUBCASE("test make_record can convert csv line to fields") {

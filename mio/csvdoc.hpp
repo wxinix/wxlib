@@ -122,7 +122,7 @@ template<typename ...Ts> requires UniqueCsvFields<Ts...>
 struct CsvDoc
 {
   using Record = CsvRecord<Ts...>;
-  constexpr static auto numfields = std::tuple_size_v<Record>;
+  constexpr static auto field_count = std::tuple_size_v<Record>;
 
   CsvDoc() = default;
   CsvDoc(const CsvDoc &) = delete;
@@ -148,19 +148,19 @@ struct CsvDoc
       auto it{detected_names.begin()};
       // compare the detected names to schema, and set the flag bit if different.
       bitset<sizeof...(args)> flags;
-      size_t bitpos{0};
-      ((flags.set(bitpos, string_view{args.field_name}.compare(string_view{*it}) != 0), bitpos++, it++), ...);
+      size_t bit_pos{0};
+      ((flags.set(bit_pos, string_view{args.field_name}.compare(string_view{*it}) != 0), bit_pos++, it++), ...);
 
       auto s = flags.to_string();
-      return flags.none() ?
-             make_tuple(true, string("success")) :
-             make_tuple(false, format("Invalid column names, error code {}", string{s.rbegin(), s.rend()}));
+      bool ok = flags.none();
+      string msg = ok ? "success" : format("Invalid column names, code {}", string{s.rbegin(), s.rend()});
+      return make_tuple(ok, msg);
     };
 
-    auto l_detected_numfields{std::count(a_header.begin(), a_header.end(), ',') + 1};
-    return (l_detected_numfields == numfields) ?
+    auto detected_field_count{std::count(a_header.begin(), a_header.end(), ',') + 1};
+    return (detected_field_count == field_count) ?
            apply(f, Record{}) :
-           make_tuple(false, format("Invalid column counts: expected {}, detected {} ", numfields, l_detected_numfields));
+           make_tuple(false, format("Invalid column counts: expected {}, detected {} ", field_count, detected_field_count));
   }
 
   /*!
@@ -172,9 +172,9 @@ struct CsvDoc
   auto make_record(std::string_view a_line)
   {
     Record result{};
-    const char *l_begin = a_line.data();
-    const char *l_end = std::next(l_begin, a_line.size());
-    make_record_impl(result, l_begin, l_end);
+    const char *b = a_line.data();
+    const char *e = std::next(b, a_line.size());
+    make_record_impl(result, b, e);
     return result;
   }
 
@@ -186,9 +186,9 @@ struct CsvDoc
    */
   void make_record(Record &a_rec, std::string_view a_line)
   {
-    const char *l_begin = a_line.data();
-    const char *l_end = std::next(l_begin, a_line.size());
-    make_record_impl(a_rec, l_begin, l_end);
+    const char *b = a_line.data();
+    const char *e = std::next(b, a_line.size());
+    make_record_impl(a_rec, b, e);
   }
 
   bool header_on_first_line{true};
@@ -197,21 +197,20 @@ private:
   template<size_t I = 0>
   void make_record_impl(Record &a_rec, const char *a_begin, const char *a_end)
   {
-    if constexpr (I == numfields) {
+    if constexpr (I == field_count) {
       return;
     } else {
-      const char *l_find{nullptr};
-
+      const char *find_pos = nullptr;
       if constexpr (std::remove_cvref_t<decltype(get<I>(a_rec))>::Quoted::value) {
-        l_find = fast_find<'"'>(a_begin, a_end); // opening quote
-        l_find = fast_find<'"'>(std::next(l_find), a_end); // closing quote
-        l_find = fast_find<','>(l_find, a_end); // comma
+        find_pos = fast_find<'"'>(a_begin, a_end); // opening quote
+        find_pos = fast_find<'"'>(std::next(find_pos), a_end); // closing quote
+        find_pos = fast_find<','>(find_pos, a_end); // comma
       } else {
-        l_find = fast_find<','>(a_begin, a_end);
+        find_pos = fast_find<','>(a_begin, a_end);
       }
 
-      std::get<I>(a_rec).data = {a_begin, l_find};
-      return l_find != a_end ? a_begin = std::next(l_find), make_record_impl<I + 1>(a_rec, a_begin, a_end) : void();
+      std::get<I>(a_rec).data = {a_begin, find_pos};
+      return find_pos != a_end ? a_begin = std::next(find_pos), make_record_impl<I + 1>(a_rec, a_begin, a_end) : void();
     }
   }
 };

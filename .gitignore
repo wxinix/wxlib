@@ -41,4 +41,7 @@
 /.vs/
 /out/
 **/build/**
-build/**
+.build/**
+/release
+/debug
+.idea/**

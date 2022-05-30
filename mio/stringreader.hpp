@@ -82,7 +82,7 @@ public:
   /**
     Event that fires asynchronously when a new line has been read.
 
-    Additional thread worker ID provided for distinguishing the thread-context.
+    Additional thread ID provided for distinguishing the thread-context.
     Use the ID to facilitate thread-safe data handling.
 
     Should return status code 0 for success, and non-zero for error.
@@ -92,7 +92,7 @@ public:
     Exceptions, if any, must not escape the callback. They must be handled
     inside the call back, then translated to user-defined error code before returning.
   */
-  using AsyncGetlineCallback = std::function<int(int a_tid, const std::string_view)>;
+  using AsyncGetlineCallback = std::function<int(int, const std::string_view)>;
 
   /**
     Event that fires synchronously when a new line has been read.
@@ -115,14 +115,14 @@ public:
 
      \param   a_file  The file to read. It must exist.
    */
-  [[maybe_unused]] explicit StringReader(const std::string &a_file) : m_mmap{a_file}
+  [[maybe_unused]] explicit StringReader(const std::string &a_file) : mmap_{a_file}
   {
-    m_begin = m_mmap.begin();
+    begin_ = mmap_.begin();
   }
 
-  explicit StringReader(const std::string &&a_file) : m_mmap{a_file}
+  explicit StringReader(const std::string &&a_file) : mmap_{a_file}
   {
-    m_begin = m_mmap.begin();
+    begin_ = mmap_.begin();
   }
 
   StringReader() = delete;
@@ -133,7 +133,7 @@ public:
 
   ~StringReader()
   {
-    m_mmap.unmap();
+    mmap_.unmap();
   }
 
   /**
@@ -145,7 +145,7 @@ public:
   requires (L == LoadingMode::Synchronous)
   [[nodiscard]] bool eof() const noexcept
   {
-    return (m_begin == nullptr);
+    return (begin_ == nullptr);
   }
 
   /**
@@ -156,7 +156,7 @@ public:
  */
   [[nodiscard]] inline bool is_mapped() const noexcept
   {
-    return m_mmap.is_mapped();
+    return mmap_.is_mapped();
   }
 
   /**
@@ -170,18 +170,18 @@ public:
   requires (L == LoadingMode::Synchronous)
   std::string_view getline() noexcept
   {
-    const char *l_begin = m_begin;
-    const char *l_find = fast_find<'\n'>(l_begin, m_mmap.end());
+    const char *b = begin_;
+    const char *find_pos = fast_find<'\n'>(b, mmap_.end());
 
-    // l_find == m_mmap.end() happens only once at end of file. The majority of the
-    // processing will be for l_find != m_mmap.end(). Give this hint to the compiler
+    // find_pos == mmap_.end() happens only once at end of file. The majority of the
+    // processing will be for find_pos != mmap_.end(). Give this hint to the compiler
     // for better branch prediction.
-    if (semi_branch_expect((l_find != m_mmap.end()), true))
-      m_begin = std::next(l_find);
+    if (semi_branch_expect((find_pos != mmap_.end()), true))
+      begin_ = std::next(find_pos);
     else
-      m_begin = (l_begin = nullptr), (l_find = nullptr); // Set BOTH l_begin AND l_find nullptr if end of file.
+      begin_ = (b = nullptr), (find_pos = nullptr); // Set BOTH b AND find_pos nullptr if end of file.
 
-    return {l_begin, static_cast<size_t>(l_find - l_begin)};
+    return {b, static_cast<size_t>(find_pos - b)};
   }
 
   /**
@@ -197,17 +197,17 @@ public:
   requires (L == LoadingMode::Synchronous)
   size_t getline(const SyncGetlineCallback &a_callback) noexcept
   {
-    size_t l_numlines{0};
+    auto line_count = size_t{0};
 
     // Fall back to synchronous line by line processing.
     while (!this->eof()) {
       // If a non-zero status code is returned, break immediately.
       if (semi_branch_expect((a_callback(this->getline()) == 0), true))
-        l_numlines++;
+        line_count++;
       else
         break;
     }
-    return l_numlines;
+    return line_count;
   }
 
   /**
@@ -226,72 +226,76 @@ public:
   size_t async_getline(const AsyncGetlineCallback &a_callback) noexcept
   {
     // Spawn a couple of futures for async processing.
-    std::vector<std::future<size_t>> l_futures;
-
-    for (int i = 0; auto &p : mmap_partitions(NumThreads))
-      l_futures.emplace_back(std::async(async_getline_impl, i++, p.first, p.second, a_callback));
+    auto futures = std::vector<std::future<size_t>>{};
+    for (int i = 0; auto &p : make_partitions(NumThreads))
+      futures.emplace_back(std::async(async_getline_impl, i++, p.first, p.second, a_callback));
 
     // Collect the total number of lines read.
-    return std::accumulate(l_futures.begin(), l_futures.end(), size_t(0), [](size_t b, auto &&a) { return (a.get() + b); });
+    return std::accumulate(futures.begin(), futures.end(), size_t(0), [](size_t b, auto &&a) { return (a.get() + b); });
   }
 
 private:
   /**
    * A thread worker function for read lines. This is an internal function to be called by getline_async.
-   * @param a_tid - The thread ID.
+   * @param a_thread_id - The thread ID.
    * @param a_begin - The first_iter of the range
    * @param a_end - The last_iter of the range
    * @param a_callback - A getline event callback.
    * @return Total number of lines processed.
    */
-  static size_t async_getline_impl(uint8_t a_tid,
+  static size_t async_getline_impl(uint8_t a_thread_id,
                                    const char *a_begin,
                                    const char *a_end,
                                    const AsyncGetlineCallback &a_callback) noexcept
   {
-    const char *l_begin = a_begin;
-    const char *l_find = fast_find<'\n'>(l_begin, a_end);
+    const char *b = a_begin;
+    const char *find_pos = fast_find<'\n'>(b, a_end);
+    auto counter = size_t{0};
 
-    size_t l_counter{0};
-
-    while (l_find != a_end) {
+    while (find_pos != a_end) {
       // If a non-zero status code is returned, break immediately.
-      if (semi_branch_expect(a_callback(a_tid, {l_begin, static_cast<size_t>(l_find - l_begin)}) == 0, true))
-        l_counter++;
+      if (semi_branch_expect(a_callback(a_thread_id, {b, static_cast<size_t>(find_pos - b)}) == 0, true))
+        counter++;
       else
         break;
 
-      l_begin = std::next(l_find);
-      l_find = fast_find<'\n'>(l_begin, a_end);
+      b = std::next(find_pos);
+      find_pos = fast_find<'\n'>(b, a_end);
     }
 
-    return l_counter;
+    return counter;
   }
 
-  auto mmap_partitions(const uint8_t a_numparts) noexcept
+  /*!
+   * Makes the specified number of partitions.
+   * @param a_count The number of partitions to make.
+   * @return
+   */
+  auto make_partitions(const uint8_t a_count) noexcept
   {
     using Partition = std::pair<const char *, const char *>;
-    std::vector<Partition> l_partitions;
 
-    const auto l_partition_size = m_mmap.size() / a_numparts;
-    const char *l_begin = m_begin;
-    const char *l_end = find_end<'\n'>(l_begin, l_partition_size);
+    auto result = std::vector<Partition>{};
+    const auto part_size = mmap_.size() / a_count;
 
-    for (uint8_t i = 0; i < a_numparts; i++) {
-      l_partitions.emplace_back<Partition>({l_begin, l_end});
+    const char *b = begin_;
+    const char *e = find_end<'\n'>(b, part_size);
 
-      if (i < a_numparts - 1) {
-        l_begin = l_end;
-        l_end = (i == a_numparts - 2) ? m_mmap.end() : find_end<'\n'>(l_begin, l_partition_size);
+    for (uint8_t i = 0; i < a_count; i++) {
+      result.emplace_back<Partition>({b, e});
+
+      if (i < a_count - 1) {
+        b = e;
+        e = (i == a_count - 2) ? mmap_.end() : find_end<'\n'>(b, part_size);
       }
     }
 
-    return l_partitions;
+    return result;
   }
 
 private:
-  mmap_source m_mmap;
-  const char *m_begin;
+  mmap_source mmap_;
+  const char *begin_;
 };
 
 using StringReaderAsync = StringReader<LoadingMode::Asynchronous>;

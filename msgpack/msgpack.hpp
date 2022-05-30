@@ -25,6 +25,11 @@
 
 namespace msgpack {
 
+using namespace matchit;
+
+template<typename T>
+using limits = std::numeric_limits<T>;
+
 enum class UnpackerError
 {
   OutOfRange = 1,
@@ -48,18 +53,15 @@ public:
 
   std::string message(int ev) const override
   {
-    switch (static_cast<msgpack::UnpackerError>(ev)) {
-      case UnpackerError::OutOfRange: //
-        return "out of range data-access during deserialization";
-      case UnpackerError::IntegerOverflow://
-        return "data overflows specified integer type";
-      case UnpackerError::DataNotMatchType://
-        return "data does not match type of object";
-      case UnpackerError::BadStdArraySize://
-        return "data has a different size than specified std::array object";
-      default: //
-        return "(unrecognized error)";
-    }
+    //@formatter:off
+    return match(static_cast<msgpack::UnpackerError>(ev))(
+        pattern | UnpackerError::OutOfRange       = expr("out of range data-access during deserialization"),
+        pattern | UnpackerError::IntegerOverflow  = expr("data overflows specified integer type"),
+        pattern | UnpackerError::DataNotMatchType = expr("data does not match type of object"),
+        pattern | UnpackerError::BadStdArraySize  = expr("data has a different size than specified std::array object"),
+        pattern | _                               = expr("(unrecognized error)")
+    );
+    //@formatter:on
   };
 };
 
@@ -73,12 +75,12 @@ public:
 
   std::string message(int ev) const override
   {
-    switch (static_cast<msgpack::PackerError>(ev)) {
-      case PackerError::LengthError: //
-        return "length of map, array, string or binary data exceeding 2^32 -1 elements";
-      default: //
-        return "(unrecognized error)";
-    }
+    // @formatter:off
+    return match(static_cast<msgpack::PackerError>(ev)) (
+      pattern | PackerError::LengthError = expr("length of map, array, string or binary data exceeding 2^32 -1 elements"),
+      pattern | _                        = expr("(unrecognized error)")
+    );
+    // @formatter:on
   };
 };
 
@@ -112,8 +114,6 @@ struct [[maybe_unused]] is_error_code_enum<msgpack::PackerError> : public true_t
 }
 
 namespace msgpack {
-
-using namespace matchit;
 
 /*!
   positive fixint = 0x00 - 0x7F
@@ -222,8 +222,11 @@ template<typename T>
 concept MsgPackBinary = std::same_as<T, std::vector<uint8_t>>;
 
 template<typename T>
-concept MsgPackArray = (is_stdarray<T>::value || is_stdvector<T>::value || is_stdlist<T>::value || is_stdset<T>::value)
-    && (!MsgPackBinary<T>);
+concept MsgPackArray = (!MsgPackBinary<T>)
+    && (is_stdarray<T>::value
+        || is_stdvector<T>::value
+        || is_stdlist<T>::value
+        || is_stdset<T>::value);
 
 template<typename T>
 concept MsgPackArrayOrMap = MsgPackArray<T> || MsgPackMap<T>;
@@ -235,8 +238,9 @@ template<typename T>
 concept MsgPackStringOrBinary = MsgPackString<T> || MsgPackBinary<T>;
 
 template<typename T>
-concept MsgPackFloatingPoint = std::is_floating_point_v<T> && (sizeof(T) == 4 || sizeof(T) == 8)
-    && (std::numeric_limits<T>::radix == 2);
+concept MsgPackFloatingPoint = std::is_floating_point_v<T>
+    && (sizeof(T) == 4 || sizeof(T) == 8)
+    && (limits<T>::radix == 2);
 
 class Packer
 {
@@ -261,18 +265,17 @@ public:
 
   const std::vector<uint8_t> &vector() const
   {
-    return m_serialized_object;
+    return serialized_object_;
   }
 
   void clear()
   {
-    m_serialized_object.clear();
+    serialized_object_.clear();
   }
 
   std::error_code ec{};
-private:
-  std::vector<uint8_t> m_serialized_object;
 
+private:
   template<typename T>
   void pack_type(const T &a_value)
   {
@@ -286,27 +289,22 @@ private:
   void pack_type(const T &a_value)
   {
     if (ec) return;
-    uint8_t l_type = MsgPackMap<T> ? FormatConstants::map16 : FormatConstants::array16;
-    uint8_t l_mask = (a_value.size() < 16) ? (MsgPackMap<T> ? 0b10000000 : 0b10010000) : 0x00;
-
-    size_t l_nbytes = match(a_value.size())(
+    uint8_t t = MsgPackMap<T> ? FormatConstants::map16 : FormatConstants::array16;
+    size_t len = match(a_value.size())(
         pattern | (_ < 16) =
             [&] { return sizeof(uint8_t); },
-
-        pattern | (_ < std::numeric_limits<uint16_t>::max()) =
-            [&] { return m_serialized_object.emplace_back(l_type), sizeof(uint16_t); },
-
-        pattern | (_ < std::numeric_limits<uint32_t>::max()) =
-            [&] { return m_serialized_object.emplace_back(l_type + 1), sizeof(uint32_t); },
-
-        pattern | _ = [&]() { return (ec = PackerError::LengthError), 0; }
+        pattern | (_ < limits<uint16_t>::max()) =
+            [&] { return serialized_object_.emplace_back(t), sizeof(uint16_t); },
+        pattern | (_ < limits<uint32_t>::max()) =
+            [&] { return serialized_object_.emplace_back(t + 1), sizeof(uint32_t); },
+        pattern | _ =
+            [&]() { return (ec = PackerError::LengthError), 0; }
     );
 
-    if (l_nbytes == 0)
-      return;
-
-    for (auto i = l_nbytes; i > 0; --i)
-      m_serialized_object.emplace_back(uint8_t(a_value.size() >> (8U * (i - 1)) | l_mask & 0xFF));
+    if (len == 0) return;
+    uint8_t mask = (a_value.size() < 16) ? (MsgPackMap<T> ? 0b10000000 : 0b10010000) : 0x00;
+    for (auto i = len; i > 0; --i)
+      serialized_object_.emplace_back(uint8_t(a_value.size() >> (8U * (i - 1)) | mask & 0xFF));
 
     for (const auto &el : a_value)
       if constexpr (MsgPackMap<T>)
@@ -319,61 +317,55 @@ private:
   void pack_type(const T &a_value)
   {
     if (ec) return;
-    uint8_t l_type = MsgPackString<T> ? FormatConstants::str8 : FormatConstants::bin8;
+    uint8_t t = MsgPackString<T> ? FormatConstants::str8 : FormatConstants::bin8;
 
     if (MsgPackString<T> && a_value.size() < 32) {
-      m_serialized_object.emplace_back(uint8_t(a_value.size()) | 0b10100000);
+      serialized_object_.emplace_back(uint8_t(a_value.size()) | 0b10100000);
     } else {
-      size_t l_nbytes = match(a_value.size())(
-          pattern | _ < std::numeric_limits<uint8_t>::max() =
-              [&]() { return m_serialized_object.emplace_back(l_type), sizeof(uint8_t); },
-
-          pattern | _ < std::numeric_limits<uint16_t>::max() =
-              [&]() { return m_serialized_object.emplace_back(l_type + 1), sizeof(uint16_t); },
-
-          pattern | _ < std::numeric_limits<uint32_t>::max() =
-              [&]() { return m_serialized_object.emplace_back(l_type + 2), sizeof(uint32_t); },
-
-          pattern | _ = [&]() { return (ec = PackerError::LengthError), 0; }
+      auto len = match(a_value.size())(
+          pattern | (_ < limits<uint8_t>::max()) =
+              [&]() { return serialized_object_.emplace_back(t), sizeof(uint8_t); },
+          pattern | (_ < limits<uint16_t>::max()) =
+              [&]() { return serialized_object_.emplace_back(t + 1), sizeof(uint16_t); },
+          pattern | (_ < limits<uint32_t>::max()) =
+              [&]() { return serialized_object_.emplace_back(t + 2), sizeof(uint32_t); },
+          pattern | _ =
+              [&]() { return (ec = PackerError::LengthError), 0; }
       );
 
-      if (l_nbytes == 0)
-        return;
-
-      for (auto i = l_nbytes; i > 0; --i)
-        m_serialized_object.emplace_back(uint8_t(a_value.size() >> (8U * (i - 1)) & 0xFF));
+      if (len == 0) return;
+      for (auto i = len; i > 0; --i)
+        serialized_object_.emplace_back(uint8_t(a_value.size() >> (8U * (i - 1)) & 0xFF));
     }
 
-    for (const auto &el : a_value)
-      m_serialized_object.emplace_back(static_cast<uint8_t>(el));
+    for (const auto &el : a_value) serialized_object_.emplace_back(static_cast<uint8_t>(el));
   }
 
   template<MsgPackIntegral T>
   void pack_type(const T &a_value)
   {
     if (ec) return;
-    uint64_t l_value = std::make_unsigned_t<T>(a_value);
-    size_t l_nbytes{0};
-    auto l_signed = std::is_signed_v<T>;
 
-    for (l_nbytes = 8; l_nbytes > 1; --l_nbytes)
-      if ((uint8_t(l_value >> 8U * (l_nbytes - 1)) & 0xFFL) != 0) break;
+    size_t len{0};
+    uint64_t value64 = std::make_unsigned_t<T>(a_value);
+    for (len = 8; len > 1; --len)
+      if ((uint8_t(value64 >> 8U * (len - 1)) & 0xFFL) != 0) break;
 
-    uint8_t l_type = match(l_nbytes)(
-        pattern | _ > 4 = [&]() { return (l_nbytes = 8, l_signed ? int64 : uint64); },
-        pattern | _ > 2 = [&]() { return (l_nbytes = 4, l_signed ? int32 : uint32); },
-        pattern | _ > 1 = [&]() { return (l_nbytes = 2, l_signed ? int16 : uint16); },
+    auto is_signed = std::is_signed_v<T>;
 
+    uint8_t t = match(len)(
+        pattern | _ > 4 = [&]() { return (len = 8, is_signed ? int64 : uint64); },
+        pattern | _ > 2 = [&]() { return (len = 4, is_signed ? int32 : uint32); },
+        pattern | _ > 1 = [&]() { return (len = 2, is_signed ? int16 : uint16); },
         pattern | _ = [&]() {
           return ((uint8_t(a_value & 0x80) == 0) || (uint8_t(a_value & 0xE0) == 0xE0)) ?
-                 (l_nbytes = 0, 0) : (l_signed ? int8 : uint8);
+                 (len = 0, 0) : (is_signed ? int8 : uint8);
         }
     );
 
-    (l_type > 0) ? m_serialized_object.emplace_back(l_type) : m_serialized_object.emplace_back(uint8_t(a_value));
-
-    for (auto i = l_nbytes; i > 0U; --i)
-      m_serialized_object.emplace_back(uint8_t(l_value >> (8U * (i - 1)) & 0xFFL));
+    (t > 0) ? serialized_object_.emplace_back(t) : serialized_object_.emplace_back(uint8_t(a_value));
+    for (auto i = len; i > 0U; --i)
+      serialized_object_.emplace_back(uint8_t(value64 >> (8U * (i - 1)) & 0xFFL));
   }
 
   template<MsgPackFloatingPoint T>
@@ -413,12 +405,12 @@ private:
       ieee754_float = (sign_mask | excess_exponent_mask | normalized_mantissa_mask).to_ullong();
 
     match(sizeof(T))(
-        pattern | 4 = [&]() { m_serialized_object.emplace_back(FormatConstants::float32); },
-        pattern | 8 = [&]() { m_serialized_object.emplace_back(FormatConstants::float64); }
+        pattern | 4 = [&]() { serialized_object_.emplace_back(FormatConstants::float32); },
+        pattern | 8 = [&]() { serialized_object_.emplace_back(FormatConstants::float64); }
     );
 
     for (auto i = sizeof(T); i > 0; --i)
-      m_serialized_object.emplace_back(uint8_t(ieee754_float >> (8U * (i - 1)) & 0xFF));
+      serialized_object_.emplace_back(uint8_t(ieee754_float >> (8U * (i - 1)) & 0xFF));
   }
 
   template<typename T>
@@ -432,7 +424,7 @@ private:
   void pack_type(const std::nullptr_t &/*value*/)
   {
     if (ec) return;
-    m_serialized_object.emplace_back(FormatConstants::nil);
+    serialized_object_.emplace_back(FormatConstants::nil);
   }
 
   template<>
@@ -440,10 +432,13 @@ private:
   {
     if (ec) return;
     if (a_value)
-      m_serialized_object.emplace_back(FormatConstants::true_bool);
+      serialized_object_.emplace_back(FormatConstants::true_bool);
     else
-      m_serialized_object.emplace_back(FormatConstants::false_bool);
+      serialized_object_.emplace_back(FormatConstants::false_bool);
   }
+
+private:
+  std::vector<uint8_t> serialized_object_;
 };
 
 class Unpacker
@@ -454,10 +449,10 @@ public:
   Unpacker &operator=(Unpacker &) = delete;
   Unpacker &operator=(Unpacker &&) = delete;
 
-  Unpacker() : m_begin(nullptr), m_end(nullptr)
+  Unpacker() : begin_(nullptr), end_(nullptr)
   {};
 
-  explicit Unpacker(const uint8_t *a_start, std::size_t a_size) : m_begin(a_start), m_end(a_start + a_size)
+  explicit Unpacker(const uint8_t *a_start, std::size_t a_size) : begin_(a_start), end_(a_start + a_size)
   {};
 
   template<typename ... Ts>
@@ -474,38 +469,35 @@ public:
 
   void set_data(const uint8_t *a_begin, std::size_t a_size)
   {
-    m_begin = a_begin;
-    m_end = m_begin + a_size;
+    begin_ = a_begin;
+    end_ = begin_ + a_size;
   }
 
   std::error_code ec{};
 
 private:
-  const uint8_t *m_begin;
-  const uint8_t *m_end;
-
   uint8_t current_byte()
   {
-    return (m_begin < m_end) ? *m_begin : (ec = UnpackerError::OutOfRange, 0);
+    return (begin_ < end_) ? *begin_ : (ec = UnpackerError::OutOfRange, 0);
   }
 
-  void next(int64_t bytes = 1)
+  void next(int64_t a_bytes = 1)
   {
-    if (m_end - m_begin >= 0)
-      m_begin += bytes;
+    if (end_ - begin_ >= 0)
+      begin_ += a_bytes;
     else
       ec = UnpackerError::OutOfRange;
   }
 
   template<typename T>
-  void unpack_type(T &value)
+  void unpack_type(T &a_value)
   {
     if (ec) return;
     auto recursive_data = std::vector<uint8_t>{};
     unpack_type(recursive_data);
 
     auto recursive_unpacker = Unpacker{recursive_data.data(), recursive_data.size()};
-    value.pack(recursive_unpacker);
+    a_value.pack(recursive_unpacker);
     ec = recursive_unpacker.ec;
   }
 
@@ -514,9 +506,9 @@ private:
   {
     if (ec) return;
     auto is_overflow = [&](size_t act, size_t min) { return (act < min) && (ec = UnpackerError::IntegerOverflow, true); };
-    uint8_t l_byte{current_byte()};
+    uint8_t byte_value{current_byte()};
 
-    uint8_t l_nbytes = match(l_byte)(
+    uint8_t len = match(byte_value)(
         //@formatter:off
         pattern | or_(int64, uint64) = [&]() { return is_overflow(sizeof(T), 8) ? 0 : 8; },
         pattern | or_(int32, uint32) = [&]() { return is_overflow(sizeof(T), 4) ? 0 : 4; },
@@ -524,20 +516,20 @@ private:
         pattern | or_(int8 , uint8 ) = [&]() { return is_overflow(sizeof(T), 1) ? 0 : 1; },
         //@formatter:on
         pattern | _ = [&] {
-          return ((l_byte & 0x80) == 0x00) || ((l_byte & 0xE0) == 0xE0) ?
-                 (a_value = l_byte, 0) : (ec = UnpackerError::DataNotMatchType, 0);
+          return ((byte_value & 0x80) == 0x00) || ((byte_value & 0xE0) == 0xE0) ?
+                 (a_value = byte_value, 0) : (ec = UnpackerError::DataNotMatchType, 0);
         }
     );
 
-    if (next(), l_nbytes > 0) {
-      uint64_t l_value64{0};
+    if (next(), len > 0) {
+      uint64_t value64{0};
 
-      for (auto i = l_nbytes; i > 0; --i) {
-        l_value64 |= uint64_t(current_byte()) << 8U * (i - 1);
+      for (auto i = len; i > 0; --i) {
+        value64 |= uint64_t(current_byte()) << 8U * (i - 1);
         next();
       }
 
-      a_value = T(l_value64);
+      a_value = T(value64);
     }
   }
 
@@ -545,50 +537,42 @@ private:
   void unpack_type(T &a_value)
   {
     if (ec) return;
-    uint32_t l_size = [&]() {
-      auto l_nbytes = match(current_byte())(
-          //@formatter:off
+    uint32_t len = [&]() {
+      auto l = match(current_byte())(//@formatter:off
           pattern | or_(array32, map32) = expr(4),
           pattern | or_(array16, map16) = expr(2),
-          pattern | _                   = expr(0)
-          //@formatter:on
+          pattern | _ = expr(0) //@formatter:on
       );
 
-      uint32_t l_sz{0};
-
-      if (l_nbytes > 0) {
+      uint32_t result{0};
+      if (l > 0) {
         next();
-        for (auto i = l_nbytes; i > 0; i--) {
-          l_sz += uint32_t(current_byte()) << 8 * (i - 1);
-          next();
-        }
+        for (auto i = l; i > 0; i--) { (result += uint32_t(current_byte()) << 8 * (i - 1)), next(); }
       } else {
-        l_sz = current_byte() & 0b00001111;
-        next();
+        (result = current_byte() & 0b00001111), next();
       }
-
-      return l_sz;
+      return result;
     }();
 
-    if (is_stdarray<T>::value && a_value.size() != l_size) {
+    if (is_stdarray<T>::value && a_value.size() != len) {
       ec = UnpackerError::BadStdArraySize;
       return;
     }
 
-    for (auto i = 0U; i < l_size; i++) {
+    for (auto i = 0U; i < len; i++) {
       if constexpr (MsgPackArray<T>) {
-        typename T::value_type l_value{};
-        unpack_type(l_value);
+        typename T::value_type value{};
+        unpack_type(value);
         if constexpr (is_stdarray<T>::value)
-          a_value[i] = std::move(l_value);
+          a_value[i] = std::move(value);
         else
-          a_value.emplace_back(l_value);
+          a_value.emplace_back(value);
       } else {
-        typename T::key_type l_key{};
-        typename T::mapped_type l_value{};
-        unpack_type(l_key);
-        unpack_type(l_value);
-        a_value.insert_or_assign(l_key, l_value);
+        typename T::key_type key{};
+        typename T::mapped_type value{};
+        unpack_type(key);
+        unpack_type(value);
+        a_value.insert_or_assign(key, value);
       }
     }
   }
@@ -597,38 +581,28 @@ private:
   void unpack_type(T &a_value)
   {
     if (ec) return;
-    uint32_t l_size = [&]() {
-      auto l_nbytes = match(current_byte())(
-          //@formatter:off
+    uint32_t len = [&]() {
+      auto l = match(current_byte())(//@formatter:off
           pattern | or_(str32, bin32) = expr(4),
           pattern | or_(str16, bin16) = expr(2),
           pattern | or_(str8,  bin8 ) = expr(1),
-          pattern | _                 = expr(0)
-          //@formatter:on
+          pattern | _ = expr(0) //@formatter:on
       );
 
-      uint32_t l_sz{0};
-
-      if (l_nbytes > 0) {
+      uint32_t result{0};
+      if (l > 0) {
         next();
-        for (auto i = l_nbytes; i > 0; i--) {
-          l_sz += uint32_t(current_byte()) << 8 * (i - 1);
-          next();
-        }
+        for (auto i = l; i > 0; i--) { (result += uint32_t(current_byte()) << 8 * (i - 1)), next(); };
       } else {
-        l_sz = current_byte() & 0b00011111;
-        next();
+        (result = current_byte() & 0b00011111), next();
       }
-
-      return l_sz;
+      return result;
     }();
 
-    if (m_begin + l_size <= m_end) {
-      a_value = T{m_begin, m_begin + l_size};
-      next(l_size);
-    } else {
+    if (begin_ + len <= end_)
+      (a_value = T{begin_, begin_ + len}), next(len);
+    else
       ec = UnpackerError::OutOfRange;
-    }
   }
 
   template<MsgPackFloatingPoint T>
@@ -639,37 +613,38 @@ private:
         // Stored as IEEE-754 floating point format.
         pattern | or_(float64, float32) = [&]() {
           using int_t = std::conditional_t<sizeof(T) == 4, uint32_t, uint64_t>;
-          int_t l_data{0};
+          int_t data{0};
           next();
 
           for (auto i = sizeof(T); i > 0; --i) {
-            l_data += std::conditional_t<sizeof(T) == 8, uint64_t, uint8_t>(current_byte()) << 8 * (i - 1);
+            data += std::conditional_t<sizeof(T) == 8, uint64_t, uint8_t>(current_byte()) << 8 * (i - 1);
             next();
           }
 
-          auto l_bits = std::bitset<8 * sizeof(T)>(l_data);
-          T l_mantissa = 1.0;
+          auto bits = std::bitset<8 * sizeof(T)>(data);
+          T mantissa = 1.0;
 
           for (auto i = sizeof(T) == 8 ? 52U : 23U; i > 0; --i)
-            if (l_bits[i - 1])
-              l_mantissa += 1.0 / (int_t(1) << ((sizeof(T) == 8 ? 53U : 24U) - i));
+            if (bits[i - 1])
+              mantissa += 1.0 / (int_t(1) << ((sizeof(T) == 8 ? 53U : 24U) - i));
 
-          if (l_bits[8 * sizeof(T) - 1])
-            l_mantissa *= -1;
+          if (bits[8 * sizeof(T) - 1])
+            mantissa *= -1;
 
-          std::conditional_t<sizeof(T) == 8, uint16_t, uint8_t> l_exponent{0};
+          std::conditional_t<sizeof(T) == 8, uint16_t, uint8_t> exponent{0};
 
           for (auto i = 0U; i < (sizeof(T) == 8 ? 11 : 8); ++i)
-            l_exponent += l_bits[i + (sizeof(T) == 8 ? 52 : 23)] << i;
+            exponent += bits[i + (sizeof(T) == 8 ? 52 : 23)] << i;
 
-          l_exponent -= (sizeof(T) == 8 ? 1023 : 127);
-          a_value = ldexp(l_mantissa, l_exponent);
+          exponent -= (sizeof(T) == 8 ? 1023 : 127);
+          a_value = ldexp(mantissa, exponent);
         },
+
         // Could have been stored in integral format: int8, int16, int32, int64, or fixint.
         pattern | _ = [&]() {
-          int64_t l_data{0};
-          unpack_type(l_data);
-          a_value = T(l_data);
+          int64_t data{0};
+          unpack_type(data);
+          a_value = T(data);
         }
     );
   }
@@ -681,10 +656,10 @@ private:
     using timepoint_t = typename std::chrono::time_point<ClockT, DurationT>;
     using rep_t = typename timepoint_t::rep;
 
-    auto l_placeholder = rep_t{};
+    auto placeholder = rep_t{};
 
-    unpack_type(l_placeholder);
-    a_value = static_cast<timepoint_t>(DurationT(l_placeholder));
+    unpack_type(placeholder);
+    a_value = static_cast<timepoint_t>(DurationT(placeholder));
   }
 
   template<>
@@ -701,6 +676,10 @@ private:
     a_value = current_byte() != 0xC2;
     next();
   }
+
+private:
+  const uint8_t *begin_;
+  const uint8_t *end_;
 };
 
 /*!
@@ -721,50 +700,50 @@ concept Packable = requires(T packable, Packer &packer, Unpacker &unpacker) {
 template<Packable T>
 std::vector<uint8_t> pack(T &a_packable, std::error_code &a_ec)
 {
-  auto l_packer = Packer{};
-  a_packable.pack(l_packer);
-  a_ec = l_packer.ec;
-  return l_packer.vector();
+  auto packer = Packer{};
+  a_packable.pack(packer);
+  a_ec = packer.ec;
+  return packer.vector();
 }
 
 template<Packable T>
 std::vector<uint8_t> pack(T &&a_packable, std::error_code &a_ec)
 {
-  auto l_packer = Packer{};
-  a_packable.pack(l_packer);
-  a_ec = l_packer.ec;
-  return l_packer.vector();
+  auto packer = Packer{};
+  a_packable.pack(packer);
+  a_ec = packer.ec;
+  return packer.vector();
 }
 
 template<Packable T>
 std::vector<uint8_t> pack(T &a_packable)
 {
-  std::error_code l_ec;
-  return pack(std::forward<T&>(a_packable), l_ec);
+  std::error_code ec;
+  return pack(std::forward<T &>(a_packable), ec);
 }
 
 template<Packable T>
 std::vector<uint8_t> pack(T &&a_packable)
 {
-  std::error_code l_ec;
-  return pack(std::forward<T&&>(a_packable), l_ec);
+  std::error_code ec;
+  return pack(std::forward<T &&>(a_packable), ec);
 }
 
 template<Packable T>
 T unpack(const uint8_t *a_start, const std::size_t a_size, std::error_code &a_ec)
 {
-  auto l_packable = T{};
-  auto l_unpacker = Unpacker(a_start, a_size);
-  l_packable.pack(l_unpacker);
-  a_ec = l_unpacker.ec;
-  return l_packable;
+  auto packable = T{};
+  auto unpacker = Unpacker(a_start, a_size);
+  packable.pack(unpacker);
+  a_ec = unpacker.ec;
+  return packable;
 }
 
 template<Packable T>
 T unpack(const uint8_t *a_start, const std::size_t a_size)
 {
-  std::error_code l_ec{};
-  return unpack<T>(a_start, a_size, l_ec);
+  std::error_code ec{};
+  return unpack<T>(a_start, a_size, ec);
 }
 
 template<Packable T>
@@ -776,8 +755,8 @@ T unpack(const std::vector<uint8_t> &a_data, std::error_code &a_ec)
 template<Packable T>
 T unpack(const std::vector<uint8_t> &a_data)
 {
-  std::error_code l_ec;
-  return unpack<T>(a_data.data(), a_data.size(), l_ec);
+  std::error_code ec;
+  return unpack<T>(a_data.data(), a_data.size(), ec);
 }
 
 }
