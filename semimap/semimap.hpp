@@ -282,7 +282,7 @@ public:
   template<typename IdentifierT>
   bool contains(IdentifierT a_key)
   {
-    return staticmap::contains(a_key) ? staticmap::get(a_key).contains(this) : false;
+    return staticmap::contains(a_key) && staticmap::get(a_key).contains(this);
   }
 
   template<typename IdentifierT>
