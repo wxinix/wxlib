@@ -21,11 +21,11 @@ namespace mio {
 template<unsigned char C>
 static const char *find_end(const char *a_begin, size_t a_size) noexcept
 {
-  using iter_diff_t = typename std::iterator_traits<const char *>::difference_type;
-  auto rb = std::reverse_iterator(std::next(a_begin, static_cast<iter_diff_t>(a_size)));
-  auto re = std::reverse_iterator(a_begin);
+    using iter_diff_t = typename std::iterator_traits<const char *>::difference_type;
+    auto rb = std::reverse_iterator(std::next(a_begin, static_cast<iter_diff_t>(a_size)));
+    auto re = std::reverse_iterator(a_begin);
 
-  return std::find(rb, re, C).base();
+    return std::find(rb, re, C).base();
 }
 
 /*!
@@ -39,25 +39,25 @@ static const char *find_end(const char *a_begin, size_t a_size) noexcept
 template<unsigned char C>
 static const char *avx2_find(const char *a_begin, const char *a_end)
 {
-  const char *begin = a_begin;
+    const char *begin = a_begin;
 
-  for (auto q = _mm256_set1_epi8(C); begin + 32 < a_end; begin += 32) {
-    auto x = _mm256_lddqu_si256(reinterpret_cast<const __m256i *>(begin));
-    auto r = _mm256_cmpeq_epi8(x, q);
-    auto z = _mm256_movemask_epi8(r);
+    for (auto q = _mm256_set1_epi8(C); begin + 32 < a_end; begin += 32) {
+        auto x = _mm256_lddqu_si256(reinterpret_cast<const __m256i *>(begin));
+        auto r = _mm256_cmpeq_epi8(x, q);
+        auto z = _mm256_movemask_epi8(r);
 
-    if (z) {
+        if (z) {
 #ifdef __GNUC__
-      const char *rr = begin + __builtin_ffs(z) - 1;
+            const char *rr = begin + __builtin_ffs(z) - 1;
 #else
-      unsigned long b;
-      auto rr = _BitScanForward(&b, z) ? (begin + b) : begin;
+            unsigned long b;
+            auto rr = _BitScanForward(&b, z) ? (begin + b) : begin;
 #endif
-      return rr < a_end ? rr : a_end;
+            return rr < a_end ? rr : a_end;
+        }
     }
-  }
 
-  return oct_find<C>(begin, a_end);
+    return oct_find<C>(begin, a_end);
 }
 
 /*!
@@ -70,39 +70,39 @@ static const char *avx2_find(const char *a_begin, const char *a_end)
 template<unsigned char C>
 static const char *oct_find(const char *a_begin, const char *a_end)
 {
-  constexpr uint64_t k = C;
-  constexpr uint64_t p = k | (k << 0x08) | (k << 0x10) | (k << 0x18) | (k << 0x20) | (k << 0x28) | (k << 0x30) | (k << 0x38);
+    constexpr uint64_t k = C;
+    constexpr uint64_t p = k | (k << 0x08) | (k << 0x10) | (k << 0x18) | (k << 0x20) | (k << 0x28) | (k << 0x30) | (k << 0x38);
 
-  auto do_find = [&](const uint64_t *a_data) {
-    auto input = (*a_data) ^ p;
-    auto tmp = (input & 0x7F7F7F7F7F7F7F7FL) + 0x7F7F7F7F7F7F7F7FL;
-    tmp = ~(tmp | input | 0x7F7F7F7F7F7F7F7FL);
-    return std::countr_zero(tmp) >> 3;
-  };
+    auto do_find = [&](const uint64_t *a_data) {
+        auto input = (*a_data) ^ p;
+        auto tmp = (input & 0x7F7F7F7F7F7F7F7FL) + 0x7F7F7F7F7F7F7F7FL;
+        tmp = ~(tmp | input | 0x7F7F7F7F7F7F7F7FL);
+        return std::countr_zero(tmp) >> 3;
+    };
 
-  const char *b = a_begin;
-  auto jmp = std::distance(a_begin, a_end) >> 3;
-  
-  for (int i = 0; i < jmp; i++) {
-    auto find_pos = do_find((uint64_t *) (b));
-    if (find_pos == 8)
-      b = std::next(b, 8);
-    else
-      return std::next(b, find_pos);
-  }
+    const char *b = a_begin;
+    auto jmp = std::distance(a_begin, a_end) >> 3;
 
-  return std::find(b, a_end, C);
+    for (int i = 0; i < jmp; i++) {
+        auto find_pos = do_find((uint64_t *) (b));
+        if (find_pos == 8)
+            b = std::next(b, 8);
+        else
+            return std::next(b, find_pos);
+    }
+
+    return std::find(b, a_end, C);
 }
 
 template<unsigned char C>
 static const char *fast_find(const char *a_begin, const char *a_end) noexcept
 {
 #ifdef __AVX2__
-  return avx2_find<C>(a_begin, a_end);
+    return avx2_find<C>(a_begin, a_end);
 #elif __GNUC__
-  return oct_find<C>(a_begin, a_end);
+    return oct_find<C>(a_begin, a_end);
 #else
-  return std::find(a_begin, a_end, C);
+    return std::find(a_begin, a_end, C);
 #endif
 }
 
